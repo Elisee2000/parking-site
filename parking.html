@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Supervision Parking UNH - 120 Places</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #0f172a; color: #f8fafc; }
+    header { background: #1e293b; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #334155; }
+    .badge { padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: bold; background: #64748b; }
+    .badge.ok { background: #16a34a; } .badge.ko { background: #dc2626; }
+    main { max-width: 1000px; margin: 24px auto; padding: 0 16px; }
+    
+    .grille { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+    .carte { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; }
+    .carte span { font-size: 13px; color: #94a3b8; display: block; margin-bottom: 6px; }
+    .carte b { font-size: 32px; color: #38bdf8; }
+    
+    .panneau { background: #1e293b; border-radius: 12px; padding: 20px; margin-top: 16px; border: 1px solid #334155; }
+    .jauge-barre { background: #334155; height: 18px; border-radius: 9px; overflow: hidden; margin-top: 10px; }
+    .jauge-remplie { height: 100%; width: 0%; background: #22c55e; transition: width 0.5s ease; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
+    td, th { padding: 8px 12px; border-bottom: 1px solid #334155; text-align: left; }
+    th { color: #94a3b8; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h2 style="margin:0">Supervision Parking Intelligent (120 Places)</h2>
+  <div>
+    Parking : <span id="st-parking" class="badge">?</span>
+    Broker : <span id="st-broker" class="badge">connexion...</span>
+  </div>
+</header>
+
+<main>
+  <div class="grille">
+    <div class="carte"><span>Véhicules Présents</span><b id="presents">0</b> / 120</div>
+    <div class="carte"><span>Places Libres</span><b id="libres">120</b></div>
+    <div class="carte"><span>Recette du Jour</span><b id="recette">0</b> CDF</div>
+    <div class="carte"><span>Total Entrées / Sorties</span><b id="mvt">0 / 0</b></div>
+  </div>
+
+  <div class="panneau">
+    <h3>Taux d'occupation en Direct</h3>
+    <div style="display:flex; justify-content:space-between; font-weight:bold;">
+      <span id="taux-txt">0.0 %</span>
+      <span id="statut-parking" style="color:#22c55e;">OUVERT</span>
+    </div>
+    <div class="jauge-barre">
+      <div id="jauge" class="jauge-remplie"></div>
+    </div>
+  </div>
+
+  <div class="panneau">
+    <h3>Journal des Événements</h3>
+    <table>
+      <thead><tr><th>Heure</th><th>Événement</th><th>Détails</th></tr></thead>
+      <tbody id="journal"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+  const BROKER_URL = "wss://b210f4aa.ala.eu-central-1.emqxsl.com:8084/mqtt";
+  const USER = "web-dashboard";
+  const PASS = "MotDePasseWeb!";
+  const BASE = "unh/parking/p1/";
+
+  const client = mqtt.connect(BROKER_URL, {
+    username: USER, password: PASS,
+    clientId: "web-supervision-" + Math.random().toString(16).slice(2, 8)
+  });
+
+  const badge = (id, txt, ok) => {
+    const el = document.getElementById(id);
+    el.textContent = txt; el.className = "badge " + (ok ? "ok" : "ko");
+  };
+
+  client.on("connect", () => {
+    badge("st-broker", "connecté", true);
+    // S'abonne à tout ce qui concerne le parking
+    client.subscribe(BASE + "#");
+  });
+  client.on("close", () => badge("st-broker", "déconnecté", false));
+
+  client.on("message", (topic, msg) => {
+    const txt = msg.toString();
+    const heure = new Date().toLocaleTimeString("fr-FR");
+
+    if (topic.endsWith("status")) {
+      badge("st-parking", txt, txt === "online");
+      return;
+    }
+
+    const d = JSON.parse(txt);
+
+    // Mise à jour de l'occupation
+    if (topic.endsWith("occupation")) {
+      document.getElementById("presents").textContent = d.presents;
+      document.getElementById("libres").textContent = d.libres;
+      document.getElementById("taux-txt").textContent = d.taux.toFixed(1) + " %";
+
+      const jauge = document.getElementById("jauge");
+      jauge.style.width = Math.min(d.taux, 100) + "%";
+      if (d.taux < 80) jauge.style.background = "#22c55e";
+      else if (d.taux <= 95) jauge.style.background = "#f97316";
+      else jauge.style.background = "#dc2626";
+
+      document.getElementById("statut-parking").textContent = d.complet ? "COMPLET" : "OUVERT";
+    }
+
+    // Mise à jour des statistiques
+    if (topic.endsWith("stats")) {
+      document.getElementById("recette").textContent = d.recette_jour;
+      document.getElementById("mvt").textContent = d.entrees_jour + " / " + d.sorties_jour;
+    }
+
+    // Événement ticket
+    if (topic.endsWith("evenement")) {
+      let det = (d.type === "entree") ? "Ticket généré : " + d.recu : txt;
+      const tr = `<tr><td>${heure}</td><td><b>ENTRÉE</b></td><td>${det}</td></tr>`;
+      document.getElementById("journal").insertAdjacentHTML("afterbegin", tr);
+    }
+  });
+</script>
+</body>
+</html>
